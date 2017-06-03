@@ -13,9 +13,13 @@
 #define ACK_TAG 11
 #define MESSAGE_TAG 22
 
-#define CHANGE_REPUTATION_TYPE 110
-#define REMOVE_FROM_COMPANY_QUEUE 120
-#define REQUEST_KILLER 130
+#define CHANGE_REPUTATION_TYPE 100
+#define REMOVE_FROM_COMPANY_QUEUE 200
+#define REQUEST_KILLER 300
+#define ACK_TYPE 400
+
+#define SLEEP_RAND_MAX 10
+#define REPUTATION_CHANGE_MIN_MAX 5
 
 struct Message {
   int sender_id;
@@ -38,5 +42,4 @@ struct ThreadParams{
    int tid;
    int size;
    bool* threadIsAlive;
-   int* proc_time;
 };
