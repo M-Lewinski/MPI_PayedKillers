@@ -18,8 +18,10 @@
 #define REQUEST_KILLER 300
 #define ACK_TYPE 400
 
-#define SLEEP_RAND_MAX 10
+#define SLEEP_RAND_MAX 8
 #define REPUTATION_CHANGE_MIN_MAX 5
+#define CRITICAL_SLEEP_MAX 10
+#define CRITICAL_SLEEP_MIN 10
 
 struct Message {
   int sender_id;
@@ -42,4 +44,5 @@ struct ThreadParams{
    int tid;
    int size;
    bool* threadIsAlive;
+  int* curr_time;
 };
