@@ -87,7 +87,7 @@ void use_killer_and_free_others(int tid, int size, int company, struct Company *
 void mainThread(bool* threadIsAlive, int *curr_time, pthread_mutex_t *mutexCompany, pthread_cond_t *changeCondition, int tid,int size, struct Company *companies,bool* allReserved) {
    int i=0,k=0,j=0, USED_COMPANY=-1;
    srand(tid*1000);
-   int distance = 0;
+   int distance = 2;
    while(*threadIsAlive){
       bool enoughPosition = false;
       int * requested = (int*)malloc(sizeof(int)*COMPANIES_COUNT); //To mamy informację o firmach do których po kolei się kolejkowaliśmy
