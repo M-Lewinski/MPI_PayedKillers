@@ -45,4 +45,5 @@ struct ThreadParams{
    int size;
    bool* threadIsAlive;
   int* curr_time;
+  bool *allReserved;
 };
