@@ -24,7 +24,7 @@ void init_companies(int tid,int size,int companyCount,struct Company *companies)
 /**
    Tworzenie nowego wątku
 **/
-struct ThreadParams* createNewThread(int tid,int size,struct Company* companies, bool *threadIsAlive, pthread_mutex_t *mutexCompany,pthread_cond_t *changeCondition, int*curr_time);
+struct ThreadParams* createNewThread(int tid,int size,struct Company* companies, bool *threadIsAlive, pthread_mutex_t *mutexCompany,pthread_cond_t *changeCondition, int*curr_time, bool* allReserved);
 /**
    Wrapper na MPI_Send któremu podajemy wszystkie parametry i in już buduje strukturę do przesłania
 **/
@@ -84,18 +84,19 @@ void use_killer_and_free_others(int tid, int size, int company, struct Company *
    free_request_to_company(tid, size, company, companies, mutexCompany, curr_time);
 }
 
-void mainThread(bool* threadIsAlive, int *curr_time, pthread_mutex_t *mutexCompany, int tid,int size, struct Company *companies) {
-   int i=0,k=0, USED_COMPANY=-1;
+void mainThread(bool* threadIsAlive, int *curr_time, pthread_mutex_t *mutexCompany, pthread_cond_t *changeCondition, int tid,int size, struct Company *companies,bool* allReserved) {
+   int i=0,k=0,j=0, USED_COMPANY=-1;
    srand(tid*1000);
+   int distance = 0;
    while(*threadIsAlive){
-      //sleep(rand()%SLEEP_RAND_MAX+1);
+      bool enoughPosition = false;
       int * requested = (int*)malloc(sizeof(int)*COMPANIES_COUNT); //To mamy informację o firmach do których po kolei się kolejkowaliśmy
       for(i=0;i<COMPANIES_COUNT;i++) requested[i]=-1;
+      int sendRes = 0;
       int requested_size=0;
-      i=0;
       int loop=1;
       while(loop){
-         //Sprawdzamy czy w poprzednich firmach zwolniło się jakieś zmiejsce Jeżeli jest zabójca to używamy jeżeli nie to zwalniamy firmy które są dalej i dłużej w nich czekamy
+         //Sprawdzamy czy w poprzednich firmach zwolniło się jakieś miejsce Jeżeli jest zabójca to używamy jeżeli nie to zwalniamy firmy które są dalej i dłużej w nich czekamy
          if(requested_size>0){
             int lowest = -1;
             for(k=0;k<requested_size;k++){
@@ -109,36 +110,59 @@ void mainThread(bool* threadIsAlive, int *curr_time, pthread_mutex_t *mutexCompa
                   loop=0;
                   break;
                }
-
-               if(lowest>0 && lowest<position){
-                  //TODO WYWALIĆ tą firmę i przesunąć requested
-               } else lowest = position;
-            }
-         }
+             }
+             if(!loop){
+               break;
+             }
+             // Jeżeli jesteśmy dostatecznie blisko konca kolejki to rezygnujemy z reszty o mniejszej reputacji
+               pthread_mutex_lock(mutexCompany);
+               int maxRep = -1;
+               int closest = -1;
+               int reputations[requested_size];
+               for(k=0;k<requested_size;k++){
+                 int position = check_position(tid, size, requested[k], companies);
+                 if(position < (companies[requested[k]].killers+distance) && position>=0){
+                   if(maxRep < companies[requested[k]].reputation){
+                     closest = k;
+                     maxRep = companies[requested[k]].reputation;
+                   }
+                 }
+                 reputations[k] = companies[requested[k]].reputation;
+               }
+               pthread_mutex_unlock(mutexCompany);
+               if (closest != -1){
+                 enoughPosition = true;
+                 for(k=0;k<requested_size && k!=closest;k++){
+                   if(reputations[k] < maxRep){
+                     free_request_to_company(tid, size, requested[k], companies, mutexCompany, curr_time);
+                     requested[k] = -1;
+                     int tmp = requested[k];
+                     for(j=k;j<requested_size-1;j++){
+                       requested[j] = requested[j+1];
+                       requested[j+1] = requested[j];
+                       }
+                     requested_size--;
+                   }
+                 }
+               }
+             }
          //Jeżeli są jakieś firmy do których się jeszcze nie zakolejkowaliśmy, to to robimy
-         if(i<COMPANIES_COUNT){
+         if(sendRes<COMPANIES_COUNT && !enoughPosition){
             pthread_mutex_lock(mutexCompany);
             int best_company = select_best_company(companies, COMPANIES_COUNT, requested, requested_size);
             pthread_mutex_unlock(mutexCompany);
             requested[requested_size] = best_company;
             requested_size++;
             request_company(tid, size, best_company, companies, mutexCompany, curr_time);
-            i++;
-
-            // //Czy możemy użyć najnowszej firmy. Jeżeli tak to zwalniamy resztę, używamy, zwalniamy firmę.
-            // //TODO MOŻE BY TO WYWALIĆ? W ZASADZIE TA GÓRNA CZĘŚC ZAŁATWI WSZYSTKO
-            // pthread_mutex_lock(mutexCompany);
-            // int position = check_position(tid, size, requested[requested_size-1], companies);
-            // pthread_mutex_unlock(mutexCompany);
-            // if ((position < companies[requested[requested_size-1]].killers) && (position>=0) ) {
-            //    USED_COMPANY = requested[requested_size-1];
-            //    use_killer_and_free_others(tid, size, requested[requested_size-1], companies, requested_size, requested, mutexCompany);
-            //    break;
-            // }
-
+            sendRes++;
          }
          else {
-            //TODO WAIT CONDITION ABY NIE CZEKAĆ AKTYWNIE
+            pthread_mutex_lock(mutexCompany);
+            *allReserved = true;
+            while(*allReserved){
+              pthread_cond_wait(changeCondition,mutexCompany);
+            }
+            pthread_mutex_unlock(mutexCompany);
          }
 
       }
@@ -161,7 +185,7 @@ void *additionalThread(void *thread){
   bool* threadIsAlive = pointer->threadIsAlive;
   pthread_mutex_t *mutexCompany = pointer->mutexCompany;
   pthread_cond_t *changeCondition = pointer->changeCondition;
-
+  bool *allReserved = pointer->allReserved;
   while(*threadIsAlive){
     //WAIT ON MASSAGE
     struct Message data = reveive_mpi_message(MESSAGE_TAG);
@@ -178,7 +202,8 @@ void *additionalThread(void *thread){
          pthread_mutex_lock(mutexCompany);
          if(data.timestamp > *curr_time) *curr_time=data.timestamp;
          remove_client_from_queue(companies, size, data.sender_id, data.company_id);
-         //TODO NOTIFY OTHER THREAD?
+         *allReserved = false;
+         pthread_cond_signal(changeCondition);
          pthread_mutex_unlock(mutexCompany);
          break;
        case REQUEST_KILLER: //Dodajemy do kolejki
@@ -233,14 +258,16 @@ int main(int argc,char **argv){
    pthread_cond_init(changeCondition,NULL);
    int *curr_time=(int*)malloc(sizeof(int)*1);
    *curr_time=0;
-   struct ThreadParams* param = createNewThread(tid,size,companies,threadIsAlive,mutexCompany,changeCondition, curr_time);
+   bool* allReserved = (bool*)malloc(sizeof(bool));
+   *allReserved = false;
+   struct ThreadParams* param = createNewThread(tid,size,companies,threadIsAlive,mutexCompany,changeCondition, curr_time,allReserved);
    int err = pthread_create(thread, attr, additionalThread, (void *)param);
    if (err){
       fprintf(stderr,"ERROR Pthread_create: %d\n",err);
       MPI_Abort(MPI_COMM_WORLD, 1);
    }
 
-   mainThread(threadIsAlive, curr_time, mutexCompany, tid, size, companies);
+   mainThread(threadIsAlive, curr_time, mutexCompany,changeCondition, tid, size, companies,allReserved);
 
    pthread_join(*thread, NULL);
    pthread_attr_destroy(attr);
@@ -249,10 +276,12 @@ int main(int argc,char **argv){
    MPI_Type_free(&mpi_message_type);
    MPI_Finalize();
    free(thread);
+   free(threadIsAlive);
    free(attr);
    free(changeCondition);
    free(mutexCompany);
-   //TODO FREE ALL DATA
+   free(allReserved);
+   free(curr_time);
    free(companies);
    pthread_exit(NULL);
 }
@@ -300,7 +329,7 @@ void init_companies(int tid,int size,int companyCount,struct Company *companies)
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-struct ThreadParams* createNewThread(int tid,int size,struct Company* companies, bool *threadIsAlive, pthread_mutex_t *mutexCompany,pthread_cond_t *changeCondition, int *curr_time){
+struct ThreadParams* createNewThread(int tid,int size,struct Company* companies, bool *threadIsAlive, pthread_mutex_t *mutexCompany,pthread_cond_t *changeCondition, int *curr_time, bool* allReserved){
     struct ThreadParams* thread = (struct ThreadParams*)malloc(sizeof(struct ThreadParams));
     thread->tid = tid;
     thread->size = size;
@@ -309,6 +338,7 @@ struct ThreadParams* createNewThread(int tid,int size,struct Company* companies,
     thread->changeCondition = changeCondition;
     thread->mutexCompany = mutexCompany;
     thread->curr_time=curr_time;
+    thread->allReserved = allReserved;
     return thread;
 }
 void send_mpi_message(int sender_id, int company_id, int info_type, int timestamp, int data, int tag, int receiver){
@@ -417,6 +447,7 @@ void free_request_to_company(int tid, int size, int company, struct Company * co
          send_mpi_message(tid,company,REMOVE_FROM_COMPANY_QUEUE,(*curr_time),-1,MESSAGE_TAG, i);
       }
 }
+
 int check_position(int tid, int size, int company, struct Company * companies){
    int i=0;
    for(i=0;i<size;i++){
@@ -428,7 +459,7 @@ int check_position(int tid, int size, int company, struct Company * companies){
 void request_company(int tid, int size, int company, struct Company * companies, pthread_mutex_t *mutexCompany, int*curr_time){
    int i=0;
    pthread_mutex_lock(mutexCompany);
-   int CURR_TIME = (*curr_time)++;
+   int CURR_TIME = ++(*curr_time);
    add_client_to_queue(companies, size, tid, company, CURR_TIME);
    pthread_mutex_unlock(mutexCompany);
    for(i=0;i<size;i++){
